@@ -6,20 +6,19 @@ const MAX_ADDRESS: u8 = 63;
 
 pub enum ZPacketCreateError {
     DestinationAddressOutOfRange,
-    SenderAddressOutOfRange
+    SenderAddressOutOfRange,
+    BadCRC,
 }
 
 pub struct ZPacket {
     d_addr: u8,
     s_addr: u8,
     d: [u8; ZPACKET_DATA_LENGTH],
-    d_len: usize,
-
-    crc: u8,
+    d_len: usize
 }
 
 impl ZPacket {
-    pub fn new_without_crc(dest_addr: u8, sender_addr: u8, data: &[u8]) -> Result<Self, ZPacketCreateError> {
+    fn new(dest_addr: u8, sender_addr: u8, data: &[u8]) -> Result<Self, ZPacketCreateError> {
 
         if dest_addr > MAX_ADDRESS {
             return Err(ZPacketCreateError::DestinationAddressOutOfRange);
@@ -29,40 +28,7 @@ impl ZPacket {
             return Err(ZPacketCreateError::SenderAddressOutOfRange);
         }
 
-        let mut zp = ZPacket{d_addr: dest_addr, s_addr: sender_addr, d: [0; ZPACKET_DATA_LENGTH], d_len: data.len(), crc: 0};
-
-        //Start calculating the CRC for the packet
-        let mut calc_crc = dest_addr;
-        calc_crc ^= sender_addr;
-        calc_crc ^= zp.d_len as u8;
-        
-        let mut i: usize = 0;
-
-        for cur_b in data {
-            zp.d[i] = *cur_b;
-            
-            calc_crc ^= *cur_b;
-
-            i += 1;
-        }
-
-        zp.crc = calc_crc;
-
-        Ok(zp)
-    }
-
-    pub fn new_with_crc(dest_addr: u8, sender_addr: u8, data: &[u8], crc: u8) -> Result<Self, ZPacketCreateError> {
-
-        if dest_addr > MAX_ADDRESS {
-            return Err(ZPacketCreateError::DestinationAddressOutOfRange);
-        }
-        
-        if sender_addr > MAX_ADDRESS {
-            return Err(ZPacketCreateError::SenderAddressOutOfRange);
-        }
-
-        let mut zp = ZPacket{d_addr: dest_addr, s_addr: sender_addr, d: [0; ZPACKET_DATA_LENGTH], d_len: data.len(), crc};
-
+        let mut zp = ZPacket{d_addr: dest_addr, s_addr: sender_addr, d: [0; ZPACKET_DATA_LENGTH], d_len: data.len()};
         
         let mut i: usize = 0;
 
@@ -111,10 +77,6 @@ enum ZPacketDeserializerReadState {
 //     }
 // }
 
-pub enum ZPacketDeserializeError {
-    NonMatchingCRC,
-}
-
 const ADDR_MASK: u8 = 0x3F;
 const ZPACKET_START_BITS: u8 = 0x80;
 
@@ -141,9 +103,8 @@ impl ZPacketDeserializer {
         }
     }
 
-    pub fn read(&mut self, data_in: &[u8]) -> (usize, Result<Option<ZPacket>, ZPacketDeserializeError>) {
+    pub fn read(&mut self, data_in: &[u8]) -> (usize, Result<Option<ZPacket>, ZPacketCreateError>) {
         let mut num_bytes_read: usize = 0;
-        let mut packet_created: Option<ZPacket> = None;
 
         for cur_b in data_in {
             num_bytes_read += 1;
@@ -200,15 +161,21 @@ impl ZPacketDeserializer {
                 ZPacketDeserializerReadState::ReadCRC => {
                     if *cur_b == self.p_calc_crc {
                         //CRC matched what we calculated therefore we have a good packet
-                        return (num_bytes_read, ZPacket::new_with_crc(self.p_d_addr, self.p_s_addr, &self.p_data[..self.p_data_len], self.p_calc_crc))
+                        let zp_res = ZPacket::new(self.p_d_addr, self.p_s_addr, &self.p_data[..self.p_data_len]);
+
+                        match zp_res {
+                            Ok(zp) => return (num_bytes_read, Ok(Some(zp))),
+                            Err(e) => return (num_bytes_read, Err(e)),
+                        }
                     } else {
-                        return (num_bytes_read, Err(ZPacketDeserializeError::NonMatchingCRC));
+                        //CRC failed so return bytes read and error
+                        return (num_bytes_read, Err(ZPacketCreateError::BadCRC));
                     }
                 }
             }
         }
 
-        (num_bytes_read, packet_created)
+        (num_bytes_read, Ok(None))
     }
 
     
