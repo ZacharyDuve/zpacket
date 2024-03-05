@@ -1,14 +1,233 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+
+//Max length is 255 because 0 takes up one possibility
+const ZPACKET_DATA_LENGTH: usize = 255;
+//Maximum of 64 addresses
+const MAX_ADDRESS: u8 = 63;
+
+pub enum ZPacketCreateError {
+    DestinationAddressOutOfRange,
+    SenderAddressOutOfRange
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub struct ZPacket {
+    d_addr: u8,
+    s_addr: u8,
+    d: [u8; ZPACKET_DATA_LENGTH],
+    d_len: usize,
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    crc: u8,
+}
+
+impl ZPacket {
+    pub fn new_without_crc(dest_addr: u8, sender_addr: u8, data: &[u8]) -> Result<Self, ZPacketCreateError> {
+
+        if dest_addr > MAX_ADDRESS {
+            return Err(ZPacketCreateError::DestinationAddressOutOfRange);
+        }
+        
+        if sender_addr > MAX_ADDRESS {
+            return Err(ZPacketCreateError::SenderAddressOutOfRange);
+        }
+
+        let mut zp = ZPacket{d_addr: dest_addr, s_addr: sender_addr, d: [0; ZPACKET_DATA_LENGTH], d_len: data.len(), crc: 0};
+
+        //Start calculating the CRC for the packet
+        let mut calc_crc = dest_addr;
+        calc_crc ^= sender_addr;
+        calc_crc ^= zp.d_len as u8;
+        
+        let mut i: usize = 0;
+
+        for cur_b in data {
+            zp.d[i] = *cur_b;
+            
+            calc_crc ^= *cur_b;
+
+            i += 1;
+        }
+
+        zp.crc = calc_crc;
+
+        Ok(zp)
+    }
+
+    pub fn new_with_crc(dest_addr: u8, sender_addr: u8, data: &[u8], crc: u8) -> Result<Self, ZPacketCreateError> {
+
+        if dest_addr > MAX_ADDRESS {
+            return Err(ZPacketCreateError::DestinationAddressOutOfRange);
+        }
+        
+        if sender_addr > MAX_ADDRESS {
+            return Err(ZPacketCreateError::SenderAddressOutOfRange);
+        }
+
+        let mut zp = ZPacket{d_addr: dest_addr, s_addr: sender_addr, d: [0; ZPACKET_DATA_LENGTH], d_len: data.len(), crc};
+
+        
+        let mut i: usize = 0;
+
+        for cur_b in data {
+            zp.d[i] = *cur_b;
+
+            i += 1;
+        }
+
+        Ok(zp)
+    }
+
+    pub fn dest_address(&self) -> u8 {
+        self.d_addr
+    }
+
+    pub fn sender_addr(&self) -> u8 {
+        self.s_addr
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.d[..self.d_len]
     }
 }
+
+enum ZPacketDeserializerReadState {
+    ReadDestAddr,
+    ReadSenderAddr,
+    ReadLength,
+    ReadData,
+    ReadCRC,
+}
+
+// pub struct ZPacketDeserializerParseResults {
+//     bytes_read: usize,
+//     packet_created: Option<ZPacket>
+// }
+
+// impl ZPacketDeserializerParseResults {
+//     pub fn number_bytes_read(&self) -> usize {
+//         self.bytes_read
+//     }
+
+//     pub fn packet(&self) -> Option<ZPacket> {
+//         self.packet_created
+//     }
+// }
+
+pub enum ZPacketDeserializeError {
+    NonMatchingCRC,
+}
+
+const ADDR_MASK: u8 = 0x3F;
+const ZPACKET_START_BITS: u8 = 0x80;
+
+pub struct ZPacketDeserializer {
+    read_state: ZPacketDeserializerReadState,
+    p_d_addr: u8,
+    p_s_addr: u8,
+    p_data_len: usize,
+    p_data: [u8; ZPACKET_DATA_LENGTH],
+    p_data_i: usize,
+    p_calc_crc: u8,
+}
+
+impl ZPacketDeserializer {
+    pub fn new() -> Self {
+        ZPacketDeserializer{
+            read_state: ZPacketDeserializerReadState::ReadDestAddr, 
+            p_d_addr: 0, 
+            p_s_addr: 0,
+            p_data_len: 0,
+            p_data: [0u8; ZPACKET_DATA_LENGTH],
+            p_data_i: 0,
+            p_calc_crc: 0
+        }
+    }
+
+    pub fn read(&mut self, data_in: &[u8]) -> (usize, Result<Option<ZPacket>, ZPacketDeserializeError>) {
+        let mut num_bytes_read: usize = 0;
+        let mut packet_created: Option<ZPacket> = None;
+
+        for cur_b in data_in {
+            num_bytes_read += 1;
+
+            match self.read_state {
+                ZPacketDeserializerReadState::ReadDestAddr => {
+                    if *cur_b & ADDR_MASK == ZPACKET_START_BITS {
+                        //Successfully read the start bits
+                        //Read out the address
+                        self.p_d_addr = *cur_b & ADDR_MASK;
+                        //Need to start calculating the crc
+                        self.p_calc_crc = *cur_b;
+                        //Need to read the sender next
+                        self.read_state = ZPacketDeserializerReadState::ReadSenderAddr;
+                    }
+                    //Else would be to fall back to ReadDestAddr state which is where we are
+                }
+                ZPacketDeserializerReadState::ReadSenderAddr => {
+                    //Save the address portion as the sender
+                    self.p_s_addr = *cur_b * ADDR_MASK;
+                    //Currently the Most significant two bits are reserved for future use
+                    //XOR the byte with the crc
+                    self.p_calc_crc ^= *cur_b;
+
+                    //Set state to read length next
+                    self.read_state = ZPacketDeserializerReadState::ReadLength;
+                }
+                ZPacketDeserializerReadState::ReadLength => {
+                    //Save the byte as the length
+                    self.p_data_len = *cur_b as usize;
+
+                    //XOR the byte with the crc
+                    self.p_calc_crc ^= *cur_b;
+
+                    //If length is 0 then skip to read crc otherwise go to read data
+                    if self.p_data_len == 0 {
+                        self.read_state = ZPacketDeserializerReadState::ReadCRC
+                    } else {
+                        self.read_state = ZPacketDeserializerReadState::ReadData
+                    }
+                }
+                ZPacketDeserializerReadState::ReadData => {
+                    self.p_data[self.p_data_i] = *cur_b;
+                    self.p_data_i += 1;
+
+                    //XOR the byte with the crc
+                    self.p_calc_crc ^= *cur_b;
+                    
+                    //If we have read all of the bytes then go to read crc step
+                    if self.p_data_i == self.p_data_len {
+                        self.read_state = ZPacketDeserializerReadState::ReadCRC
+                    }
+                }
+                ZPacketDeserializerReadState::ReadCRC => {
+                    if *cur_b == self.p_calc_crc {
+                        //CRC matched what we calculated therefore we have a good packet
+                        return (num_bytes_read, ZPacket::new_with_crc(self.p_d_addr, self.p_s_addr, &self.p_data[..self.p_data_len], self.p_calc_crc))
+                    } else {
+                        return (num_bytes_read, Err(ZPacketDeserializeError::NonMatchingCRC));
+                    }
+                }
+            }
+        }
+
+        (num_bytes_read, packet_created)
+    }
+
+    
+
+}
+
+
+
+// pub fn add(left: usize, right: usize) -> usize {
+//     left + right
+// }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn it_works() {
+//         let result = add(2, 2);
+//         assert_eq!(result, 4);
+//     }
+// }
