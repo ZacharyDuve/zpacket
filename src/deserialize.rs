@@ -1,8 +1,5 @@
 
-use crate::{ZPACKET_DATA_LENGTH, ZPacket, ZPacketCreateError};
-
-const ADDR_MASK: u8 = 0x3F;
-const ZPACKET_START_BITS: u8 = 0x80;
+use crate::{ZPacket, ZPacketCreateError, ZPACKET_DATA_LENGTH, ADDRESS_MASK, DEST_ADDR_PACKET_START_IDENTIFER_BITS};
 
 enum DeserializerState {
     DestinationAddress,
@@ -43,10 +40,10 @@ impl ZPacketDeserializer {
 
             match self.read_state {
                 DeserializerState::DestinationAddress => {
-                    if *cur_b & ADDR_MASK == ZPACKET_START_BITS {
+                    if *cur_b & ADDRESS_MASK == DEST_ADDR_PACKET_START_IDENTIFER_BITS {
                         //Successfully read the start bits
                         //Read out the address
-                        self.p_d_addr = *cur_b & ADDR_MASK;
+                        self.p_d_addr = *cur_b & ADDRESS_MASK;
                         //Need to start calculating the crc
                         self.p_calc_crc = *cur_b;
                         //Need to read the sender next
@@ -56,7 +53,7 @@ impl ZPacketDeserializer {
                 }
                 DeserializerState::SenderAddress => {
                     //Save the address portion as the sender
-                    self.p_s_addr = *cur_b * ADDR_MASK;
+                    self.p_s_addr = *cur_b * ADDRESS_MASK;
                     //Currently the Most significant two bits are reserved for future use
                     //XOR the byte with the crc
                     self.p_calc_crc ^= *cur_b;

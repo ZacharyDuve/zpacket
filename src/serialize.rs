@@ -1,5 +1,5 @@
 
-use crate::ZPacket;
+use crate::{ZPacket, DEST_ADDR_PACKET_START_IDENTIFER_BITS};
 
 enum SerializerState {
     DestinationAddress,
@@ -41,8 +41,10 @@ impl Iterator for ZPacketSerializer {
             //First step is to write out the destination Address
             SerializerState::DestinationAddress => {
                 self.state = SerializerState::SenderAddress;
-                self.calculate_crc(self.packet.d_addr);
-                Some(self.packet.d_addr)
+                //For the serialization we need to add the identifier bits to the destionation address
+                let out_dest_addr = self.packet.d_addr | DEST_ADDR_PACKET_START_IDENTIFER_BITS;
+                self.calculate_crc(out_dest_addr);
+                Some(out_dest_addr)
             },
             //Second step is to write the sender address
             SerializerState::SenderAddress => {
@@ -69,7 +71,7 @@ impl Iterator for ZPacketSerializer {
                 self.cur_data_i += 1;
 
                 //Need to check that we have gotten to the end of the data to then move onto the CRC
-                if self.cur_data_i == self.packet.d.len() {
+                if self.cur_data_i == self.packet.d_len {
                     self.state = SerializerState::CRC
                 }
                 self.calculate_crc(cur_byte);

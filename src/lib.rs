@@ -1,14 +1,20 @@
-use serialize::ZPacketSerializer;
+#![no_std]
 
+use serialize::ZPacketSerializer;
 
 mod serialize;
 pub mod deserialize;
 
 //Max length is 255 because 0 takes up one possibility
-const ZPACKET_DATA_LENGTH: usize = 255;
+pub const ZPACKET_DATA_LENGTH: usize = 255;
 //Maximum of 64 addresses
-const MAX_ADDRESS: u8 = 63;
+const MAX_ADDRESS: u8 = 0b0011_1111;
+//With MAX_ADDRESS being 63 0b0011_1111 (63) this leaves the first two bits as free. 
+const ADDRESS_MASK: u8 = 0b0011_1111;
+//We can check packet start by checking to see if we see alternating bit pattering in those bits starting with a 1
+const DEST_ADDR_PACKET_START_IDENTIFER_BITS: u8 = 0b1000_0000;
 
+#[derive(Debug)]
 pub enum ZPacketCreateError {
     DestinationAddressOutOfRange,
     SenderAddressOutOfRange,
@@ -23,7 +29,7 @@ pub struct ZPacket {
 }
 
 impl ZPacket {
-    fn new(dest_addr: u8, sender_addr: u8, data: &[u8]) -> Result<Self, ZPacketCreateError> {
+    pub fn new(dest_addr: u8, sender_addr: u8, data: &[u8]) -> Result<Self, ZPacketCreateError> {
 
         if dest_addr > MAX_ADDRESS {
             return Err(ZPacketCreateError::DestinationAddressOutOfRange);
